@@ -1,0 +1,26 @@
+[package]
+name = "delta-trial"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde_json = "1.0.85"
+
+[dependencies.tokio]
+version = "1.21.2"
+features = ["rt-multi-thread", "macros"]
+
+[dependencies.parquet]
+version = "24.0.0"
+features = ["async"]
+
+[dependencies.uuid]
+version = "1.1.2"
+features = ["v4"]
+
+[dependencies.deltalake]
+version = "0.4.1"
+git = "https://github.com/delta-io/delta-rs"
+branch = "main"
