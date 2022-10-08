@@ -325,6 +325,7 @@ dependencies = [
 name = "delta-trial"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "deltalake",
  "parquet 24.0.0",
  "serde_json",

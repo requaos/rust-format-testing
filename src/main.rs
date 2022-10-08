@@ -1,28 +1,30 @@
+mod parq;
+
+use deltalake::action::Action;
+use deltalake::table_state::DeltaTableState;
 use deltalake::{
-    action::Protocol, DeltaTableBuilder, DeltaTableMetaData, Schema, SchemaDataType, SchemaField,
+    action, action::Protocol, DeltaTableBuilder, DeltaTableError, DeltaTableMetaData, Schema,
+    SchemaDataType, SchemaField,
 };
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::{fs, path::Path, sync::Arc};
-
-use parquet::{
-    column::writer::ColumnWriter,
-    data_type::ByteArray,
-    file::{properties::WriterProperties, writer::SerializedFileWriter},
-    schema::parser::parse_message_type,
-};
+use std::{fs, path::Path};
 
 #[tokio::main]
 async fn main() {
-    write_sample_parquet("./data/table_init/simple.parquet");
-    write_delta_table("./data/tables/users").await;
+    let p = "./data/table_init/simple.parquet";
+    std::fs::remove_file(p).unwrap_or_default();
+    parq::write_sample_parquet(p);
 
-    // let mut table = deltalake::open_table("./tables/simple").await.unwrap();
-    // let mut table = DeltaTableBuilder::from_uri("./tables/simple").without_files().without_tombstones().load().await?;
-    // let mut tx = table.create_transaction(Some(deltalake::DeltaTransactionOptions::default()));
+    let d = "./data/tables/users";
+    std::fs::remove_dir_all(d).unwrap_or_default();
+    let res = write_delta_table(d).await;
+    if let Err(res) = res {
+        println!("{:?}", res);
+    }
 }
 
-async fn write_delta_table(table_uri: &str) {
+async fn write_delta_table(table_uri: &str) -> Result<(), DeltaTableError> {
     // Setup
     let table_schema = Schema::new(vec![
         SchemaField::new(
@@ -85,110 +87,53 @@ async fn write_delta_table(table_uri: &str) {
         serde_json::Value::String("test user".to_string()),
     );
     // Action
-    let maybe_err = dt.create(delta_md.clone(), protocol.clone(), Some(commit_info), None)
-        .await;
+    // dt.create(delta_md.clone(), protocol.clone(), Some(commit_info), None).await
+    let meta = action::MetaData::try_from(delta_md)?;
 
-    match maybe_err {
-        Err(error) => {
-            println!("Error creating deltatable: {:?}", error)
-        },
-        Ok(()) => {unimplemented!();}
-    }
-}
+    // delta-rs commit info will include the delta-rs version and timestamp as of now
+    commit_info.insert("delta-rs".to_string(), Value::String("0.4.1".to_string()));
+    commit_info.insert(
+        "timestamp".to_string(),
+        Value::Number(serde_json::Number::from(
+            chrono::Utc::now().timestamp_millis(),
+        )),
+    );
 
-fn write_sample_parquet(target: &str) {
-    // Let's start our table as a simple parquet file
-    let path = Path::new(target);
-
-    let message_type = "
-  message schema {
-    REQUIRED INT32 id;
-    REQUIRED INT32 account_id;
-    REQUIRED BINARY name (UTF8);
-    REQUIRED INT64 created_at (TIMESTAMP(MILLIS,true));
-    OPTIONAL INT64 updated_at (TIMESTAMP(MILLIS,true));
-  }
-";
-    let schema = Arc::new(parse_message_type(message_type).unwrap());
-    let props = Arc::new(WriterProperties::builder().build());
-    let file = fs::File::create(&path).unwrap();
-
-    let mut rows: i64 = 0;
-    let data = vec![
-        (1, 3, "Albert", 1665031876786, 1665031876786),
-        (2, 3, "Beth", 1665031876786, 1665031876786),
-        (3, 7, "Carl", 1665031876786, 1665031876786),
-        (4, 7, "Doug", 1665031876786, 1665031876786),
+    let actions = vec![
+        Action::commitInfo(commit_info),
+        Action::protocol(protocol),
+        Action::metaData(meta),
     ];
 
-    let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
-    for (id, account_id, name, created_at, updated_at) in data {
-        let mut idx: i32 = 0;
-        let mut row_group_writer = writer.next_row_group().unwrap();
-        while let Some(mut writer) = row_group_writer.next_column().unwrap() {
-            // ... write values to a column writer
-            let column_idx: i32 = &idx % 5;
-            match writer.untyped() {
-                ColumnWriter::Int32ColumnWriter(ref mut typed) => {
-                    match column_idx {
-                        0 => {
-                            // ID column
-                            let values = vec![id];
-                            rows += typed.write_batch(&values[..], None, None).unwrap() as i64;
-                        }
-                        1 => {
-                            // AccountID column
-                            let values = vec![account_id];
-                            rows += typed.write_batch(&values[..], None, None).unwrap() as i64;
-                        }
-                        _ => {
-                            unimplemented!();
-                        }
-                    }
-                }
-                ColumnWriter::ByteArrayColumnWriter(ref mut typed) => {
-                    if column_idx == 2 {
-                        // Name column
-                        let values = ByteArray::from(name);
-                        rows += typed.write_batch(&[values], None, None).unwrap() as i64;
-                    }
-                }
-                ColumnWriter::Int64ColumnWriter(ref mut typed) => {
-                    match column_idx {
-                        3 => {
-                            // Created_at column
-                            let values = vec![created_at];
-                            rows += typed.write_batch(&values[..], None, None).unwrap() as i64;
-                        }
-                        4 => {
-                            // Updated_at column
-                            let values = vec![updated_at];
+    let mut transaction = dt.create_transaction(None);
+    transaction.add_actions(actions.clone());
 
-                            // Nullable, so we need to provide "definition" levels
-                            let def_levels = values
-                                .iter()
-                                .map(|x| if *x == 0 { 0 } else { 1 })
-                                .collect::<Vec<i16>>();
+    let prepared_commit = transaction.prepare_commit(None, None).await?;
+    println!("{:?}", prepared_commit);
 
-                            rows += typed
-                                .write_batch(&values[..], Some(&*def_levels), None)
-                                .unwrap() as i64;
-                        }
-                        _ => {
-                            unimplemented!();
-                        }
-                    }
-                }
-                _ => {
-                    unimplemented!();
-                }
-            }
-            writer.close().unwrap();
-            idx += 1;
-        }
-        row_group_writer.close().unwrap();
+    let committed_version = dt.try_commit_transaction(&prepared_commit, 0).await?;
+    println!("{:?}", committed_version);
+
+    let new_state = DeltaTableState::from_commit(&dt, committed_version).await?;
+    dt.state.merge(
+        new_state,
+        dt.config.require_tombstones,
+        dt.config.require_files,
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn it_creates_delta_table() {
+        let d = "/mnt/c/Users/Req/CLionProjects/delta-trial/data/tables/testing";
+        std::fs::remove_dir_all(d).unwrap_or_default();
+        write_delta_table(d)
+            .await
+            .expect("Failed to create deltatable");
     }
-    writer.close().unwrap();
-
-    println!("Wrote {}", rows);
 }
