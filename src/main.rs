@@ -1,26 +1,35 @@
 mod parq;
 
-use deltalake::action::Action;
-use deltalake::table_state::DeltaTableState;
 use deltalake::{
-    action, action::Protocol, DeltaTableBuilder, DeltaTableError, DeltaTableMetaData, Schema,
+    action::Protocol, DeltaTableBuilder, DeltaTableError, DeltaTableMetaData, Schema,
     SchemaDataType, SchemaField,
 };
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::{fs, path::Path};
+use std::path::Path;
+use walkdir::WalkDir;
 
 #[tokio::main]
 async fn main() {
-    let p = "./data/table_init/simple.parquet";
-    std::fs::remove_file(p).unwrap_or_default();
-    parq::write_sample_parquet(p);
+    let p = Path::new("./data/table_init");
+    std::fs::create_dir_all(p).unwrap_or_default();
+    let p_file = p.join("simple.parquet");
+    std::fs::remove_file(p_file.clone()).unwrap_or_default();
+    parq::write_sample_parquet(p_file.to_str().unwrap());
 
-    let d = "./data/tables/users";
-    std::fs::remove_dir_all(d).unwrap_or_default();
-    let res = write_delta_table(d).await;
+    let d = Path::new("./data/tables");
+    std::fs::create_dir_all(d).unwrap_or_default();
+    let d_file = d.join("users");
+    std::fs::remove_dir_all(d_file.clone()).unwrap_or_default();
+    let res = write_delta_table(d_file.to_str().unwrap()).await;
     if let Err(res) = res {
         println!("{:?}", res);
+    }
+    for file in WalkDir::new("./data")
+        .into_iter()
+        .filter_map(|file| file.ok())
+    {
+        println!("{}", file.path().display());
     }
 }
 
@@ -87,41 +96,8 @@ async fn write_delta_table(table_uri: &str) -> Result<(), DeltaTableError> {
         serde_json::Value::String("test user".to_string()),
     );
     // Action
-    // dt.create(delta_md.clone(), protocol.clone(), Some(commit_info), None).await
-    let meta = action::MetaData::try_from(delta_md)?;
-
-    // delta-rs commit info will include the delta-rs version and timestamp as of now
-    commit_info.insert("delta-rs".to_string(), Value::String("0.4.1".to_string()));
-    commit_info.insert(
-        "timestamp".to_string(),
-        Value::Number(serde_json::Number::from(
-            chrono::Utc::now().timestamp_millis(),
-        )),
-    );
-
-    let actions = vec![
-        Action::commitInfo(commit_info),
-        Action::protocol(protocol),
-        Action::metaData(meta),
-    ];
-
-    let mut transaction = dt.create_transaction(None);
-    transaction.add_actions(actions.clone());
-
-    let prepared_commit = transaction.prepare_commit(None, None).await?;
-    println!("{:?}", prepared_commit);
-
-    let committed_version = dt.try_commit_transaction(&prepared_commit, 0).await?;
-    println!("{:?}", committed_version);
-
-    let new_state = DeltaTableState::from_commit(&dt, committed_version).await?;
-    dt.state.merge(
-        new_state,
-        dt.config.require_tombstones,
-        dt.config.require_files,
-    );
-
-    Ok(())
+    dt.create(delta_md.clone(), protocol.clone(), Some(commit_info), None)
+        .await
 }
 
 #[cfg(test)]
@@ -130,7 +106,7 @@ mod tests {
 
     #[tokio::test]
     async fn it_creates_delta_table() {
-        let d = "/mnt/c/Users/Req/CLionProjects/delta-trial/data/tables/testing";
+        let d = "./data/tables/testing";
         std::fs::remove_dir_all(d).unwrap_or_default();
         write_delta_table(d)
             .await
