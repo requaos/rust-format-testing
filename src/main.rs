@@ -1,11 +1,13 @@
 mod parq;
 
+use deltalake::action::Add;
 use deltalake::{
-    action::Protocol, DeltaTableBuilder, DeltaTableError, DeltaTableMetaData, Schema,
-    SchemaDataType, SchemaField,
+    action, action::Protocol, DeltaDataTypeLong, DeltaTable, DeltaTableBuilder, DeltaTableError,
+    DeltaTableMetaData, Schema, SchemaDataType, SchemaField,
 };
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -17,23 +19,32 @@ async fn main() {
     std::fs::remove_file(p_file.clone()).unwrap_or_default();
     parq::write_sample_parquet(p_file.to_str().unwrap());
 
+    let rel_file_paths = vec!["../table_init/simple.parquet"];
+
     let d = Path::new("./data/tables");
     std::fs::create_dir_all(d).unwrap_or_default();
     let d_file = d.join("users");
     std::fs::remove_dir_all(d_file.clone()).unwrap_or_default();
-    let res = write_delta_table(d_file.to_str().unwrap()).await;
-    if let Err(res) = res {
-        println!("{:?}", res);
-    }
-    for file in WalkDir::new("./data")
-        .into_iter()
-        .filter_map(|file| file.ok())
-    {
-        println!("{}", file.path().display());
+    let res = write_delta_table(d_file.to_str().unwrap(), rel_file_paths).await;
+    match res {
+        Err(res) => {
+            println!("{:?}", res);
+        }
+        Ok(_res) => {
+            for file in WalkDir::new("./data")
+                .into_iter()
+                .filter_map(|file| file.ok())
+            {
+                println!("{}", file.path().display());
+            }
+        }
     }
 }
 
-async fn write_delta_table(table_uri: &str) -> Result<(), DeltaTableError> {
+async fn write_delta_table(
+    table_uri: &str,
+    files: Vec<&str>,
+) -> Result<DeltaTable, DeltaTableError> {
     // Setup
     let table_schema = Schema::new(vec![
         SchemaField::new(
@@ -82,6 +93,21 @@ async fn write_delta_table(table_uri: &str) -> Result<(), DeltaTableError> {
         min_writer_version: 1,
     };
 
+    let add_files: Vec<action::Add> = files
+        .iter()
+        .map(|&file| Add {
+            path: file.to_string(),
+            size: (fs::metadata(Path::new(file)).unwrap().len()) as DeltaDataTypeLong,
+            partition_values: Default::default(),
+            partition_values_parsed: None,
+            modification_time: 0,
+            data_change: false,
+            stats: None,
+            stats_parsed: None,
+            tags: None,
+        })
+        .collect();
+
     std::fs::create_dir(Path::new(table_uri)).unwrap();
 
     let mut dt = DeltaTableBuilder::from_uri(table_uri).build().unwrap();
@@ -96,8 +122,15 @@ async fn write_delta_table(table_uri: &str) -> Result<(), DeltaTableError> {
         serde_json::Value::String("test user".to_string()),
     );
     // Action
-    dt.create(delta_md.clone(), protocol.clone(), Some(commit_info), None)
-        .await
+    dt.create(
+        delta_md.clone(),
+        protocol.clone(),
+        Some(commit_info),
+        Some(add_files),
+    )
+    .await?;
+
+    Ok(dt)
 }
 
 #[cfg(test)]
