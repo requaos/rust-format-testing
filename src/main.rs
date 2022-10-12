@@ -1,4 +1,5 @@
 mod parq;
+use chrono::prelude::*;
 
 use deltalake::action::Add;
 use deltalake::{
@@ -13,104 +14,54 @@ use walkdir::WalkDir;
 
 #[tokio::main]
 async fn main() {
-    let p = Path::new("./data/table_init");
-    std::fs::create_dir_all(p).unwrap_or_default();
-    let p_file = p.join("simple.parquet");
-    std::fs::remove_file(p_file.clone()).unwrap_or_default();
-    parq::write_sample_parquet(p_file.to_str().unwrap());
-
-    let rel_file_paths = vec!["../table_init/simple.parquet"];
-
     let d = Path::new("./data/tables");
     std::fs::create_dir_all(d).unwrap_or_default();
     let d_file = d.join("users");
     std::fs::remove_dir_all(d_file.clone()).unwrap_or_default();
-    let res = write_delta_table(d_file.to_str().unwrap(), rel_file_paths).await;
-    match res {
-        Err(res) => {
-            println!("{:?}", res);
-        }
-        Ok(_res) => {
-            for file in WalkDir::new("./data")
-                .into_iter()
-                .filter_map(|file| file.ok())
-            {
-                println!("{}", file.path().display());
-            }
-        }
-    }
-}
-
-async fn write_delta_table(
-    table_uri: &str,
-    files: Vec<&str>,
-) -> Result<DeltaTable, DeltaTableError> {
-    // Setup
-    let table_schema = Schema::new(vec![
-        SchemaField::new(
-            "id".to_string(),
-            SchemaDataType::primitive("integer".to_string()),
-            true,
-            HashMap::new(),
-        ),
-        SchemaField::new(
-            "account_id".to_string(),
-            SchemaDataType::primitive("integer".to_string()),
-            true,
-            HashMap::new(),
-        ),
-        SchemaField::new(
-            "name".to_string(),
-            SchemaDataType::primitive("string".to_string()),
-            true,
-            HashMap::new(),
-        ),
-        SchemaField::new(
-            "created_at".to_string(),
-            SchemaDataType::primitive("timestamp".to_string()),
-            true,
-            HashMap::new(),
-        ),
-        SchemaField::new(
-            "updated_at".to_string(),
-            SchemaDataType::primitive("timestamp".to_string()),
-            true,
-            HashMap::new(),
-        ),
-    ]);
 
     let delta_md = DeltaTableMetaData::new(
         Some("Users".to_string()),
         Some("This table is made to test the create function for a DeltaTable".to_string()),
         None,
-        table_schema,
+        Schema::new(vec![
+            SchemaField::new(
+                "id".to_string(),
+                SchemaDataType::primitive("integer".to_string()),
+                true,
+                HashMap::new(),
+            ),
+            SchemaField::new(
+                "account_id".to_string(),
+                SchemaDataType::primitive("integer".to_string()),
+                true,
+                HashMap::new(),
+            ),
+            SchemaField::new(
+                "name".to_string(),
+                SchemaDataType::primitive("string".to_string()),
+                true,
+                HashMap::new(),
+            ),
+            SchemaField::new(
+                "created_at".to_string(),
+                SchemaDataType::primitive("timestamp".to_string()),
+                true,
+                HashMap::new(),
+            ),
+            SchemaField::new(
+                "updated_at".to_string(),
+                SchemaDataType::primitive("timestamp".to_string()),
+                true,
+                HashMap::new(),
+            ),
+        ]),
         vec!["account_id".to_string()],
         HashMap::new(),
     );
 
-    let protocol = Protocol {
-        min_reader_version: 1,
-        min_writer_version: 1,
-    };
+    std::fs::create_dir(d_file.clone()).unwrap();
 
-    let add_files: Vec<action::Add> = files
-        .iter()
-        .map(|&file| Add {
-            path: file.to_string(),
-            size: (fs::metadata(Path::new(file)).unwrap().len()) as DeltaDataTypeLong,
-            partition_values: Default::default(),
-            partition_values_parsed: None,
-            modification_time: 0,
-            data_change: false,
-            stats: None,
-            stats_parsed: None,
-            tags: None,
-        })
-        .collect();
-
-    std::fs::create_dir(Path::new(table_uri)).unwrap();
-
-    let mut dt = DeltaTableBuilder::from_uri(table_uri).build().unwrap();
+    let mut dt = DeltaTableBuilder::from_uri(d_file.clone().to_str().unwrap()).build().unwrap();
 
     let mut commit_info = Map::<String, Value>::new();
     commit_info.insert(
@@ -121,16 +72,47 @@ async fn write_delta_table(
         "users".to_string(),
         serde_json::Value::String("test user".to_string()),
     );
+
+    let add_files: Vec<action::Add> = vec![{
+        let p = d_file.clone().join("account_id=3");
+        std::fs::create_dir_all(p.clone()).unwrap_or_default();
+        let p_file = p.join("00000000000000000000.parquet");
+        std::fs::remove_file(p_file.clone()).unwrap_or_default();
+        parq::write_sample_parquet(p_file.clone().to_str().unwrap());
+        
+        Add {
+        path: p_file.clone().to_str().unwrap().to_string(),
+        size: (fs::metadata(p_file.clone()).unwrap().len()) as DeltaDataTypeLong,
+        partition_values: {
+            let mut m = HashMap::new();
+            m.insert("account_id".to_string(), Some("3".to_string()));
+            m
+        },
+        partition_values_parsed: None,
+        modification_time: Utc::now().timestamp_millis(),
+        data_change: true,
+        stats: None,
+        stats_parsed: None,
+        tags: None,
+    }}];
+
     // Action
     dt.create(
         delta_md.clone(),
-        protocol.clone(),
+        Protocol {
+            min_reader_version: 1,
+            min_writer_version: 1,
+        },
         Some(commit_info),
         Some(add_files),
-    )
-    .await?;
+    ).await.unwrap();
 
-    Ok(dt)
+    for file in WalkDir::new("./data")
+        .into_iter()
+        .filter_map(|file| file.ok())
+    {
+        println!("{}", file.path().display());
+    }
 }
 
 #[cfg(test)]
@@ -141,8 +123,5 @@ mod tests {
     async fn it_creates_delta_table() {
         let d = "./data/tables/testing";
         std::fs::remove_dir_all(d).unwrap_or_default();
-        write_delta_table(d)
-            .await
-            .expect("Failed to create deltatable");
     }
 }

@@ -28,8 +28,8 @@ pub fn write_sample_parquet(target: &str) {
     let data = vec![
         (1, 3, "Albert", 1665031876786, 1665031876786),
         (2, 3, "Beth", 1665031876786, 1665031876786),
-        (3, 7, "Carl", 1665031876786, 1665031876786),
-        (4, 7, "Doug", 1665031876786, 1665031876786),
+        (3, 3, "Carl", 1665031876786, 1665031876786),
+        (4, 3, "Doug", 1665031876786, 1665031876786),
     ];
 
     let mut writer = SerializedFileWriter::new(file, schema, props).unwrap();
